@@ -79,6 +79,9 @@ pub struct Experimental {
 
     /// Enable OP_MUL.
     pub op_mul: bool,
+
+    /// Enable OP_AND (bitwise AND on equal-length byte strings).
+    pub op_and: bool,
 }
 
 /// Used to fine-tune different variables during execution.
@@ -94,6 +97,8 @@ pub struct Options {
     pub verify_minimal_if: bool,
     /// Enfore a strict limit of 1000 total stack items.
     pub enforce_stack_limit: bool,
+    /// Enforce that OP_SUB and OP_1SUB results are non-negative (Val64 semantics).
+    pub enforce_sub_nonnegative: bool,
 
     pub experimental: Experimental,
 }
@@ -101,14 +106,16 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Options {
-            require_minimal: true,
+            require_minimal: false,
             verify_cltv: true,
             verify_csv: true,
             verify_minimal_if: true,
             enforce_stack_limit: true,
+            enforce_sub_nonnegative: true,
             experimental: Experimental {
                 op_cat: true,
                 op_mul: false,
+                op_and: true,
             },
         }
     }
@@ -117,14 +124,16 @@ impl Default for Options {
 impl Options {
     pub fn default_with_mul() -> Self {
         Options {
-            require_minimal: true,
+            require_minimal: false,
             verify_cltv: true,
             verify_csv: true,
             verify_minimal_if: true,
             enforce_stack_limit: true,
+            enforce_sub_nonnegative: true,
             experimental: Experimental {
                 op_cat: true,
                 op_mul: true,
+                op_and: true,
             },
         }
     }
@@ -603,7 +612,10 @@ impl Exec {
                     OP_MUL if !self.opt.experimental.op_mul || self.ctx != ExecCtx::Tapscript => {
                         return self.failop(ExecError::DisabledOpcode, op);
                     }
-                    OP_SUBSTR | OP_LEFT | OP_RIGHT | OP_INVERT | OP_AND | OP_OR | OP_XOR
+                    OP_AND if !self.opt.experimental.op_and || self.ctx != ExecCtx::Tapscript => {
+                        return self.failop(ExecError::DisabledOpcode, op);
+                    }
+                    OP_SUBSTR | OP_LEFT | OP_RIGHT | OP_INVERT | OP_OR | OP_XOR
                     | OP_DIV | OP_2MUL | OP_2DIV | OP_MOD | OP_LSHIFT | OP_RSHIFT => {
                         return self.failop(ExecError::DisabledOpcode, op);
                     }
@@ -928,6 +940,18 @@ impl Exec {
                 self.stack.pushstr(&ret);
             }
 
+            OP_AND if self.opt.experimental.op_and && self.ctx == ExecCtx::Tapscript => {
+                // (x1 x2 -- x1 & x2) bitwise AND on equal-length byte strings
+                self.stack.needn(2)?;
+                let x2 = self.stack.popstr().unwrap();
+                let x1 = self.stack.popstr().unwrap();
+                if x1.len() != x2.len() {
+                    return Err(ExecError::InvalidStackOperation);
+                }
+                let ret: Vec<u8> = x1.iter().zip(x2.iter()).map(|(a, b)| a & b).collect();
+                self.stack.pushstr(&ret);
+            }
+
             OP_SIZE => {
                 // (in -- in size)
                 let top = self.stack.topstr(-1)?;
@@ -960,9 +984,15 @@ impl Exec {
                     OP_1ADD => x
                         .checked_add(1)
                         .ok_or(ExecError::ScriptIntNumericOverflow)?,
-                    OP_1SUB => x
-                        .checked_sub(1)
-                        .ok_or(ExecError::ScriptIntNumericOverflow)?,
+                    OP_1SUB => {
+                        let res = x
+                            .checked_sub(1)
+                            .ok_or(ExecError::ScriptIntNumericOverflow)?;
+                        if self.opt.enforce_sub_nonnegative && res < 0 {
+                            return Err(ExecError::ScriptIntNumericOverflow);
+                        }
+                        res
+                    }
                     OP_NEGATE => x.checked_neg().ok_or(ExecError::ScriptIntNumericOverflow)?,
                     OP_ABS => x.abs(),
                     OP_NOT => (x == 0) as i64,
@@ -993,9 +1023,15 @@ impl Exec {
                     OP_ADD => x1
                         .checked_add(x2)
                         .ok_or(ExecError::ScriptIntNumericOverflow)?,
-                    OP_SUB => x1
-                        .checked_sub(x2)
-                        .ok_or(ExecError::ScriptIntNumericOverflow)?,
+                    OP_SUB => {
+                        let res = x1
+                            .checked_sub(x2)
+                            .ok_or(ExecError::ScriptIntNumericOverflow)?;
+                        if self.opt.enforce_sub_nonnegative && res < 0 {
+                            return Err(ExecError::ScriptIntNumericOverflow);
+                        }
+                        res
+                    }
                     OP_BOOLAND => (x1 != 0 && x2 != 0) as i64,
                     OP_BOOLOR => (x1 != 0 || x2 != 0) as i64,
                     OP_NUMEQUAL => (x1 == x2) as i64,
@@ -1143,7 +1179,7 @@ fn read_scriptint(item: &[u8], size: usize, minimal: bool) -> Result<i64, ExecEr
 
 pub fn convert_to_witness(script: ScriptBuf) -> Result<Vec<Vec<u8>>, Error> {
     let script = Box::leak(script.into_boxed_script()) as &'static Script;
-    let instructions = script.instructions_minimal();
+    let instructions = script.instructions();
     let mut stack = vec![];
 
     for instruction in instructions {
@@ -1160,7 +1196,8 @@ pub fn convert_to_witness(script: ScriptBuf) -> Result<Vec<Vec<u8>>, Error> {
                 match op {
                     // Push value
                     OP_PUSHNUM_NEG1 => {
-                        stack.push(vec![0x81]);
+                        // Val64: -1 as u64 = 0xFFFFFFFFFFFFFFFF
+                        stack.push(utils::scriptint_vec(-1));
                     }
 
                     OP_PUSHNUM_1 | OP_PUSHNUM_2 | OP_PUSHNUM_3 | OP_PUSHNUM_4

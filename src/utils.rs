@@ -1,5 +1,4 @@
 use crate::data_structures::ScriptIntError;
-use bitcoin::script::write_scriptint;
 
 ///  A data type to abstract out the condition stack during script execution.
 ///
@@ -88,14 +87,18 @@ impl ConditionStack {
     }
 }
 
-/// Returns minimally encoded scriptint as a byte vector.
+/// Returns Val64-encoded byte vector: unsigned little-endian with trailing zeros trimmed.
 pub fn scriptint_vec(n: i64) -> Vec<u8> {
-    let mut buf = [0u8; 8];
-    let len = write_scriptint(&mut buf, n);
-    buf[0..len].to_vec()
+    if n == 0 {
+        return vec![];
+    }
+    let bytes = (n as u64).to_le_bytes();
+    let len = 8 - bytes.iter().rev().take_while(|&&b| b == 0).count();
+    let len = core::cmp::max(len, 1);
+    bytes[..len].to_vec()
 }
 
-/// Decodes an interger in script format with flexible size limit.
+/// Decodes a Val64 integer: unsigned little-endian with flexible size limit.
 ///
 /// Note that in the majority of cases, you will want to use either
 /// [read_scriptint] or [read_scriptint_non_minimal] instead.
@@ -104,7 +107,7 @@ pub fn scriptint_vec(n: i64) -> Vec<u8> {
 pub fn read_scriptint_size(
     v: &[u8],
     max_size: usize,
-    minimal: bool,
+    _minimal: bool,
 ) -> Result<i64, ScriptIntError> {
     assert!(max_size <= 8);
 
@@ -116,39 +119,13 @@ pub fn read_scriptint_size(
         return Ok(0);
     }
 
-    if minimal {
-        let last = match v.last() {
-            Some(last) => last,
-            None => return Ok(0),
-        };
-        // Comment and code copied from Bitcoin Core:
-        // https://github.com/bitcoin/bitcoin/blob/447f50e4aed9a8b1d80e1891cda85801aeb80b4e/src/script/script.h#L247-L262
-        // If the most-significant-byte - excluding the sign bit - is zero
-        // then we're not minimal. Note how this test also rejects the
-        // negative-zero encoding, 0x80.
-        if (*last & 0x7f) == 0 {
-            // One exception: if there's more than one byte and the most
-            // significant bit of the second-most-significant-byte is set
-            // it would conflict with the sign bit. An example of this case
-            // is +-255, which encode to 0xff00 and 0xff80 respectively.
-            // (big-endian).
-            if v.len() <= 1 || (v[v.len() - 2] & 0x80) == 0 {
-                return Err(ScriptIntError::NonMinimalPush);
-            }
-        }
-    }
-
     Ok(scriptint_parse(v))
 }
 
 // Caller to guarantee that `v` is not empty.
+// Val64: unsigned little-endian, no sign bit.
 fn scriptint_parse(v: &[u8]) -> i64 {
-    let (mut ret, sh) = v
-        .iter()
-        .fold((0, 0), |(acc, sh), n| (acc + ((*n as i64) << sh), sh + 8));
-    if v[v.len() - 1] & 0x80 != 0 {
-        ret &= (1 << (sh - 1)) - 1;
-        ret = -ret;
-    }
-    ret
+    v.iter()
+        .enumerate()
+        .fold(0u64, |acc, (i, &byte)| acc + ((byte as u64) << (i * 8))) as i64
 }
