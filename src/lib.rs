@@ -1208,6 +1208,18 @@ pub fn convert_to_witness(script: ScriptBuf) -> Result<Vec<Vec<u8>>, Error> {
                         stack.push(vec![n]);
                     }
 
+                    // Val64: handle OP_ADD for the push_int(129) = { 128 } OP_1 OP_ADD pattern
+                    OP_ADD => {
+                        if stack.len() < 2 {
+                            return Err(Error::Other("OP_ADD in witness conversion requires two stack elements"));
+                        }
+                        let b = stack.pop().unwrap();
+                        let a = stack.pop().unwrap();
+                        let va = utils::read_scriptint_size(&a, 8, false).map_err(|_| Error::Other("invalid scriptint in OP_ADD"))?;
+                        let vb = utils::read_scriptint_size(&b, 8, false).map_err(|_| Error::Other("invalid scriptint in OP_ADD"))?;
+                        stack.push(utils::scriptint_vec(va + vb));
+                    }
+
                     // remainder
                     _ => return Err(Error::Other("the initial input to the witness elements can only contain elements, but not any opcode.")),
                 }
