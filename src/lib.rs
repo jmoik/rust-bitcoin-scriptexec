@@ -615,8 +615,8 @@ impl Exec {
                     OP_AND if !self.opt.experimental.op_and || self.ctx != ExecCtx::Tapscript => {
                         return self.failop(ExecError::DisabledOpcode, op);
                     }
-                    OP_SUBSTR | OP_LEFT | OP_RIGHT | OP_INVERT | OP_OR | OP_XOR
-                    | OP_DIV | OP_2MUL | OP_2DIV | OP_MOD | OP_LSHIFT | OP_RSHIFT => {
+                    OP_SUBSTR | OP_LEFT | OP_RIGHT | OP_INVERT | OP_OR | OP_XOR | OP_DIV
+                    | OP_2MUL | OP_2DIV | OP_MOD | OP_LSHIFT | OP_RSHIFT => {
                         return self.failop(ExecError::DisabledOpcode, op);
                     }
                     OP_RESERVED => {
