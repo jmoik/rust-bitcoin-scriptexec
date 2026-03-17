@@ -80,6 +80,9 @@ pub struct Experimental {
     /// Enable OP_MUL.
     pub op_mul: bool,
 
+    /// Enable OP_MOD.
+    pub op_mod: bool,
+
     /// Enable OP_AND (bitwise AND on equal-length byte strings).
     pub op_and: bool,
 }
@@ -115,6 +118,7 @@ impl Default for Options {
             experimental: Experimental {
                 op_cat: true,
                 op_mul: false,
+                op_mod: false,
                 op_and: true,
             },
         }
@@ -133,6 +137,7 @@ impl Options {
             experimental: Experimental {
                 op_cat: true,
                 op_mul: true,
+                op_mod: true,
                 op_and: true,
             },
         }
@@ -615,8 +620,11 @@ impl Exec {
                     OP_AND if !self.opt.experimental.op_and || self.ctx != ExecCtx::Tapscript => {
                         return self.failop(ExecError::DisabledOpcode, op);
                     }
+                    OP_MOD if !self.opt.experimental.op_mod || self.ctx != ExecCtx::Tapscript => {
+                        return self.failop(ExecError::DisabledOpcode, op);
+                    }
                     OP_SUBSTR | OP_LEFT | OP_RIGHT | OP_INVERT | OP_OR | OP_XOR | OP_DIV
-                    | OP_2MUL | OP_2DIV | OP_MOD | OP_LSHIFT | OP_RSHIFT => {
+                    | OP_2MUL | OP_2DIV | OP_LSHIFT | OP_RSHIFT => {
                         return self.failop(ExecError::DisabledOpcode, op);
                     }
                     OP_RESERVED => {
@@ -1065,6 +1073,21 @@ impl Exec {
                 self.stack.pushnum(res);
             }
 
+            OP_MOD if self.opt.experimental.op_mod && self.ctx == ExecCtx::Tapscript => {
+                // (x1 x2 -- out)
+                let x1 = self.stack.topnum(-2, self.opt.require_minimal)?;
+                let x2 = self.stack.topnum(-1, self.opt.require_minimal)?;
+
+                if x2 == 0 {
+                    return Err(ExecError::DivByZero);
+                }
+
+                self.stack.popn(2).unwrap();
+
+                let res = x1 % x2;
+                self.stack.pushnum(res);
+            }
+
             OP_WITHIN => {
                 // (x min max -- out)
                 let x1 = self.stack.topnum(-3, self.opt.require_minimal)?;
@@ -1377,9 +1400,23 @@ pub fn execute_script_with_witness_and_tx_template(
     tx_template: TxTemplate,
     witness: Vec<Vec<u8>>,
 ) -> ExecuteInfo {
+    execute_script_with_witness_and_tx_template_with_options(
+        script,
+        tx_template,
+        witness,
+        Options::default(),
+    )
+}
+
+pub fn execute_script_with_witness_and_tx_template_with_options(
+    script: ScriptBuf,
+    tx_template: TxTemplate,
+    witness: Vec<Vec<u8>>,
+    options: Options,
+) -> ExecuteInfo {
     let mut exec = Exec::new(
         ExecCtx::Tapscript,
-        Options::default(),
+        options,
         tx_template,
         script,
         witness,
